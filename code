@@ -1,0 +1,385 @@
+# sign_translator.py
+import cv2
+import mediapipe as mp
+import pyttsx3
+import time
+import random
+from math import hypot
+import numpy as np
+
+# -------------------- TTS --------------------
+engine = pyttsx3.init()
+engine.setProperty("rate", 150)
+voices = engine.getProperty('voices')
+if len(voices) > 1:
+    engine.setProperty('voice', voices[1].id)
+
+def speak_text(text: str) -> None:
+    engine.say(text)
+    engine.runAndWait()
+
+# -------------------- MediaPipe --------------------
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+
+# -------------------- Meanings --------------------
+gesture_meanings = {
+    "Thumbs Up": ["OK", "Yes, good", "Good", "Approved"],
+    "Thumbs Down": ["No", "Bad", "Reject", "Disapproved"],
+    "Open Palm (Hello)": ["Hello", "Hi there", "Greetings"],
+    "Open Palm (Stop)": ["Stop", "Halt", "Wait"],
+    "Closed Fist": ["No", "Power", "Solid", "Strong"],
+    "Peace Sign": ["Victory", "Two", "Peace"],
+    "Pointing Index": ["You", "One", "Attention", "Look there"],
+    "Gun Shape": ["Go", "Pointing Direction", "Aim"],
+    "High Five": ["Hi-Five", "Greeting", "Excited", "Celebrate"],
+    "OK Sign": ["OK", "Perfect", "Excellent"],
+    "Crossed Fingers": ["Good Luck", "Promise", "Wish"],
+}
+
+# -------------------- Futuristic Colors --------------------
+CYBER_BLUE = (255, 200, 50)        # Goldish-blue
+NEON_PINK = (255, 50, 255)         # Bright pink
+NEON_CYAN = (255, 255, 100)        # Cyan
+NEON_GREEN = (50, 255, 50)         # Green
+NEON_PURPLE = (255, 50, 150)       # Purple
+HOLO_BLUE = (255, 200, 100)        # Light blue
+
+# -------------------- Geometry helpers --------------------
+def dist(a, b):
+    return hypot(a[0]-b[0], a[1]-b[1])
+
+def is_extended(tip, pip):
+    return tip[1] < pip[1]
+
+def is_curled(tip, pip):
+    return tip[1] > pip[1]
+
+def finger_spread(index_tip, middle_tip, ring_tip, pinky_tip):
+    return (abs(index_tip[0]-middle_tip[0]) +
+            abs(middle_tip[0]-ring_tip[0]) +
+            abs(ring_tip[0]-pinky_tip[0])) / 3.0
+
+# -------------------- Enhanced Gesture recognition --------------------
+def recognize_gesture(landmarks, handedness_label: str):
+    lm = [(p.x, p.y) for p in landmarks]
+
+    H = mp_hands.HandLandmark
+    thumb_tip, thumb_ip, thumb_mcp = lm[H.THUMB_TIP], lm[H.THUMB_IP], lm[H.THUMB_MCP]
+    index_tip, index_pip, index_mcp = lm[H.INDEX_FINGER_TIP], lm[H.INDEX_FINGER_PIP], lm[H.INDEX_FINGER_MCP]
+    middle_tip, middle_pip, middle_mcp = lm[H.MIDDLE_FINGER_TIP], lm[H.MIDDLE_FINGER_PIP], lm[H.MIDDLE_FINGER_MCP]
+    ring_tip, ring_pip, ring_mcp = lm[H.RING_FINGER_TIP], lm[H.RING_FINGER_PIP], lm[H.RING_FINGER_MCP]
+    pinky_tip, pinky_pip, pinky_mcp = lm[H.PINKY_TIP], lm[H.PINKY_PIP], lm[H.PINKY_MCP]
+    wrist = lm[H.WRIST]
+
+    thumb_leftwards = thumb_tip[0] < thumb_ip[0] if handedness_label == "Right" else thumb_tip[0] > thumb_ip[0]
+
+    idx_ext = is_extended(index_tip, index_pip)
+    mid_ext = is_extended(middle_tip, middle_pip)
+    ring_ext = is_extended(ring_tip, ring_pip)
+    pky_ext = is_extended(pinky_tip, pinky_pip)
+
+    idx_cur = is_curled(index_tip, index_pip)
+    mid_cur = is_curled(middle_tip, middle_pip)
+    ring_cur = is_curled(ring_tip, ring_pip)
+    pky_cur = is_curled(pinky_tip, pinky_pip)
+
+    thumb_up = thumb_tip[1] < thumb_mcp[1] and thumb_tip[1] < wrist[1]
+    thumb_down = thumb_tip[1] > thumb_mcp[1] and thumb_tip[1] > wrist[1]
+
+    confidence = 0.0
+    
+    if thumb_up and all([idx_cur, mid_cur, ring_cur, pky_cur]):
+        thumb_height_ratio = (wrist[1] - thumb_tip[1]) / (wrist[1] - thumb_mcp[1])
+        confidence = min(1.0, max(0.5, thumb_height_ratio))
+        return "Thumbs Up", confidence
+
+    if thumb_down and all([idx_cur, mid_cur, ring_cur, pky_cur]):
+        thumb_height_ratio = (thumb_tip[1] - wrist[1]) / (thumb_mcp[1] - wrist[1])
+        confidence = min(1.0, max(0.5, thumb_height_ratio))
+        return "Thumbs Down", confidence
+
+    ok_dist = dist(thumb_tip, index_tip)
+    if ok_dist < 0.05 and mid_ext and ring_ext and pky_ext:
+        confidence = 1.0 - (ok_dist / 0.05)
+        return "OK Sign", confidence
+
+    if idx_ext and mid_ext and ring_cur and pky_cur and not thumb_up and not thumb_down:
+        finger_separation = abs(index_tip[0] - middle_tip[0])
+        if finger_separation > 0.03:
+            confidence = min(1.0, finger_separation / 0.08)
+            return "Peace Sign", confidence
+
+    if all([not idx_ext, not mid_ext, not ring_ext, not pky_ext]):
+        thumb_tuck_dist = dist(thumb_tip, index_mcp)
+        if thumb_tuck_dist < 0.08:
+            confidence = 1.0 - (thumb_tuck_dist / 0.08)
+            return "Closed Fist", confidence
+
+    if idx_ext and mid_cur and ring_cur and pky_cur:
+        mid_curl = middle_tip[1] - middle_pip[1]
+        ring_curl = ring_tip[1] - ring_pip[1]
+        pky_curl = pinky_tip[1] - pinky_pip[1]
+        avg_curl = (mid_curl + ring_curl + pky_curl) / 3.0
+        confidence = min(1.0, avg_curl / 0.05)
+        return "Pointing Index", confidence
+
+    if idx_ext and mid_ext and ring_cur and pky_cur:
+        y_diff = abs(index_tip[1] - middle_tip[1])
+        if y_diff < 0.05:
+            confidence = 1.0 - (y_diff / 0.05)
+            return "Gun Shape", confidence
+
+    if idx_ext and mid_ext and ring_cur and pky_cur:
+        close_x = abs(index_tip[0] - middle_tip[0]) < 0.02
+        overlap_y = abs(index_tip[1] - middle_tip[1]) < 0.04
+        if close_x and overlap_y:
+            x_dist = abs(index_tip[0] - middle_tip[0])
+            y_dist = abs(index_tip[1] - middle_tip[1])
+            confidence = 1.0 - ((x_dist / 0.02) + (y_dist / 0.04)) / 2.0
+            return "Crossed Fingers", confidence
+
+    if all([thumb_up or thumb_leftwards, idx_ext, mid_ext, ring_ext, pky_ext]):
+        spread = finger_spread(index_tip, middle_tip, ring_tip, pinky_tip)
+        
+        if spread > 0.08:
+            confidence = min(1.0, spread / 0.12)
+            return "High Five", confidence
+        
+        if spread > 0.04:
+            confidence = min(1.0, (spread - 0.04) / 0.04)
+            return "Open Palm (Hello)", confidence
+        else:
+            confidence = 1.0 - (spread / 0.04)
+            return "Open Palm (Stop)", confidence
+
+    return None, 0.0
+
+# -------------------- Futuristic UI Elements --------------------
+def apply_glow_effect(image, intensity=0.7):
+    """Apply a glow effect to the image"""
+    blur = cv2.GaussianBlur(image, (0, 0), 5)
+    return cv2.addWeighted(image, 1 - intensity, blur, intensity, 0)
+
+def draw_holographic_landmarks(image, hand_landmarks, connections):
+    """Draw futuristic holographic hand landmarks"""
+    h, w, c = image.shape
+    
+    # Draw connections with glow effect
+    for connection in connections:
+        start_idx = connection[0]
+        end_idx = connection[1]
+        
+        start_point = hand_landmarks.landmark[start_idx]
+        end_point = hand_landmarks.landmark[end_idx]
+        
+        start_x, start_y = int(start_point.x * w), int(start_point.y * h)
+        end_x, end_y = int(end_point.x * w), int(end_point.y * h)
+        
+        # Draw glowing line
+        cv2.line(image, (start_x, start_y), (end_x, end_y), NEON_CYAN, 2)
+        cv2.line(image, (start_x, start_y), (end_x, end_y), CYBER_BLUE, 1)
+    
+    # Draw landmarks as glowing points
+    for landmark in hand_landmarks.landmark:
+        x, y = int(landmark.x * w), int(landmark.y * h)
+        
+        # Outer glow
+        cv2.circle(image, (x, y), 6, NEON_PINK, -1)
+        # Inner point
+        cv2.circle(image, (x, y), 3, NEON_CYAN, -1)
+        # Center highlight
+        cv2.circle(image, (x, y), 1, (255, 255, 255), -1)
+
+def draw_cyber_ui(frame, text, confidence, gesture_name):
+    """Draw a futuristic cyberpunk UI"""
+    h, w, _ = frame.shape
+    
+    # Create a semi-transparent overlay for UI elements
+    overlay = frame.copy()
+    
+    # Draw futuristic header
+    cv2.rectangle(overlay, (0, 0), (w, 60), (0, 0, 0), -1)
+    alpha = 0.7
+    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    
+    # Draw app title with glow effect
+    title = "NEURAL SIGN TRANSLATOR v2.0"
+    cv2.putText(frame, title, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, NEON_GREEN, 2)
+    
+    # Draw scan lines for cyberpunk effect
+    for i in range(0, h, 4):
+        cv2.line(frame, (0, i), (w, i), (0, 20, 0), 1)
+    
+    # Draw data panel if gesture is detected
+    if confidence > 0:
+        panel_height = 150
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (w - 350, h - panel_height - 20), (w - 20, h - 20), (0, 0, 0), -1)
+        frame = cv2.addWeighted(overlay, 0.7, frame, 0.3, 0)
+        
+        # Draw panel border with glow
+        cv2.rectangle(frame, (w - 350, h - panel_height - 20), (w - 20, h - 20), NEON_PURPLE, 2)
+        cv2.rectangle(frame, (w - 349, h - panel_height - 19), (w - 21, h - 21), NEON_PURPLE, 1)
+        
+        # Draw panel title
+        cv2.putText(frame, "GESTURE ANALYSIS", (w - 340, h - panel_height), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, NEON_CYAN, 1)
+        
+        # Draw gesture name
+        cv2.putText(frame, f"Gesture: {gesture_name}", (w - 340, h - panel_height + 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, NEON_GREEN, 1)
+        
+        # Draw confidence meter
+        cv2.putText(frame, "Confidence:", (w - 340, h - panel_height + 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, NEON_CYAN, 1)
+        
+        # Draw confidence bar
+        meter_width = 250
+        cv2.rectangle(frame, (w - 340, h - panel_height + 75), 
+                     (w - 340 + meter_width, h - panel_height + 90), (50, 50, 50), -1)
+        cv2.rectangle(frame, (w - 340, h - panel_height + 75), 
+                     (w - 340 + int(meter_width * confidence), h - panel_height + 90), NEON_GREEN, -1)
+        cv2.rectangle(frame, (w - 340, h - panel_height + 75), 
+                     (w - 340 + meter_width, h - panel_height + 90), NEON_PURPLE, 1)
+        
+        # Draw confidence percentage
+        cv2.putText(frame, f"{int(confidence * 100)}%", (w - 340 + meter_width + 10, h - panel_height + 85), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, NEON_GREEN, 1)
+        
+        # Draw interpretation
+        if text:
+            meaning = text.split(":")[1] if ":" in text else text
+            cv2.putText(frame, f"Meaning: {meaning}", (w - 340, h - panel_height + 115), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, NEON_CYAN, 1)
+    
+    # Draw footer with instructions
+    cv2.rectangle(frame, (0, h - 40), (w, h), (0, 0, 0), -1)
+    cv2.putText(frame, "Press 'Q' to exit system", (20, h - 15), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.5, NEON_PINK, 1)
+    
+    # Draw frame border
+    cv2.rectangle(frame, (0, 0), (w-1, h-1), CYBER_BLUE, 2)
+    cv2.rectangle(frame, (5, 5), (w-6, h-6), NEON_PURPLE, 1)
+    
+    return frame
+
+def draw_hexagon_grid(frame):
+    """Draw a futuristic hexagon grid in the background"""
+    h, w, _ = frame.shape
+    grid_size = 40
+    alpha = 0.1
+    
+    overlay = frame.copy()
+    
+    for y in range(0, h + grid_size, grid_size):
+        for x in range(0, w + grid_size, grid_size):
+            offset = grid_size // 2 if (y // grid_size) % 2 == 0 else 0
+            hex_x = x + offset
+            
+            # Draw hexagon points
+            points = np.array([
+                [hex_x, y - grid_size//2],
+                [hex_x + grid_size//2, y - grid_size//4],
+                [hex_x + grid_size//2, y + grid_size//4],
+                [hex_x, y + grid_size//2],
+                [hex_x - grid_size//2, y + grid_size//4],
+                [hex_x - grid_size//2, y - grid_size//4]
+            ], np.int32)
+            
+            points = points.reshape((-1, 1, 2))
+            cv2.polylines(overlay, [points], True, NEON_CYAN, 1)
+    
+    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    return frame
+
+# -------------------- Main loop --------------------
+def main():
+    last_gesture_time = 0.0
+    gesture_cooldown = 2.5
+    shown_text = ""
+    current_confidence = 0.0
+    last_gesture = ""
+    
+    # For smooth transitions
+    text_alpha = 0.0
+    text_target_alpha = 0.0
+    text_fade_speed = 0.05
+
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        print("Error: Could not open camera.")
+        return
+
+    with mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.6
+    ) as hands:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print("Error: Failed to grab frame.")
+                break
+
+            frame = cv2.flip(frame, 1)
+            h, w, _ = frame.shape
+            
+            # Apply futuristic background
+            frame = draw_hexagon_grid(frame)
+            
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb.flags.writeable = False
+            results = hands.process(rgb)
+            rgb.flags.writeable = True
+
+            gesture_name = None
+            confidence = 0.0
+
+            if results.multi_hand_landmarks:
+                handed_label = "Right"
+                if results.multi_handedness:
+                    handed_label = results.multi_handedness[0].classification[0].label
+
+                hand_landmarks = results.multi_hand_landmarks[0]
+                
+                # Draw futuristic hand landmarks
+                draw_holographic_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+                gesture_name, confidence = recognize_gesture(hand_landmarks.landmark, handed_label)
+
+                if gesture_name:
+                    now = time.time()
+                    if now - last_gesture_time >= gesture_cooldown or gesture_name != last_gesture:
+                        meaning = random.choice(gesture_meanings.get(gesture_name, ["Unrecognized"]))
+                        shown_text = f"{gesture_name}: {meaning}"
+                        speak_text(meaning)
+                        last_gesture_time = now
+                        last_gesture = gesture_name
+                        text_target_alpha = 1.0
+                    
+                    current_confidence = confidence
+                else:
+                    current_confidence = 0.0
+            else:
+                shown_text = ""
+                text_target_alpha = 0.0
+                current_confidence = 0.0
+
+            # Apply glow effect to the entire frame
+            frame = apply_glow_effect(frame, 0.3)
+            
+            # Draw the cyber UI
+            frame = draw_cyber_ui(frame, shown_text, current_confidence, gesture_name or "None")
+            
+            # Display the frame
+            cv2.imshow("Neural Sign Translator v2.0", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
