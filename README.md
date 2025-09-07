@@ -1,2 +1,2 @@
 # SIGN-LANGUAGE-MODEL-TRANSLATOR
-A sign language translator model is an AI-powered system designed to bridge the communication gap between the Deaf and hearing communities by converting sign language into text or speech and vice versa. The model relies on a combination of computer vision, deep learning, and natural language processing (NLP) .
+A sign language translator model is an AI-powered system designed to bridge the communication gap between the Deaf and hearing communities by converting sign language into text or speech and vice versa. The model relies on a combination of computer vision, deep learning, and natural language processing (NLP).
